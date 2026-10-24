@@ -1,0 +1,331 @@
+
+<!DOCTYPE html>
+<html lang="uz">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+  <meta name="theme-color" content="#171538">
+  <title>English Battle — Player</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body class="player-body">
+  <header class="topbar">
+    <a class="brand" href="/player.html">⚔️ ENGLISH <span>BATTLE</span></a>
+    <span id="connection" class="connection"><i></i> Ulanmoqda</span>
+  </header>
+
+  <main class="player-main">
+    <section id="joinScreen" class="panel join-form">
+      <div class="game-logo">⚔️</div>
+      <div class="eyebrow">READY TO PLAY?</div>
+      <h1>English <span class="gradient-text">Battle</span></h1>
+      <p class="muted">Do‘stlaring bilan ingliz tilini sinab ko‘r!</p>
+      <form id="joinForm">
+        <label>6 xonali PIN
+          <input id="pinInput" inputmode="numeric" pattern="[0-9]{6}" maxlength="6"
+            placeholder="123456" required>
+        </label>
+        <label>Nickname
+          <input id="nicknameInput" maxlength="18" placeholder="Ismingizni kiriting" required>
+        </label>
+        <button class="btn btn-primary btn-large" type="submit">🚀 O‘yinga qo‘shilish</button>
+      </form>
+      <p id="joinError" class="error"></p>
+    </section>
+
+    <section id="lobbyScreen" class="panel waiting-panel hidden">
+      <div class="game-logo">🎮</div>
+      <h1>Salom, <span id="myName" class="gradient-text"></span>!</h1>
+      <p class="muted">Boshlovchi o‘yinni boshlashini kuting.</p>
+      <div class="waiting-animation"><span></span><span></span><span></span></div>
+      <p class="muted">Boshqa o‘yinchilar qo‘shilmoqda...</p>
+      <div class="stat-cards">
+        <div><small>BALL</small><strong id="lobbyScore">0</strong></div>
+        <div><small>O‘RIN</small><strong id="lobbyRank">—</strong></div>
+      </div>
+    </section>
+
+    <section id="questionScreen" class="hidden">
+      <div class="player-stats">
+        <div class="mini-stat"><small>BALL</small><strong id="score">0</strong></div>
+        <div class="mini-stat"><small>O‘RIN</small><strong id="rank">—</strong></div>
+        <div class="mini-stat"><small>STREAK</small><strong id="streak">0 🔥</strong></div>
+      </div>
+
+      <div class="question-progress"><div id="progressBar"></div></div>
+      <div class="player-question panel">
+        <div class="question-meta">
+          <span id="questionLabel" class="pill">SAVOL 1/10</span>
+          <span id="playerTimer" class="timer">15</span>
+        </div>
+        <div id="playerType" class="eyebrow">WORD QUIZ</div>
+        <h2 id="playerQuestion">Savol matni</h2>
+      </div>
+
+      <div id="powerups" class="powerups">
+        <button id="fiftyBtn" class="power-btn">✂️ 50/50 <small>1 marta</small></button>
+        <button id="doubleBtn" class="power-btn">⚡ Double <small>1 marta</small></button>
+      </div>
+      <div id="answerButtons" class="answer-buttons"></div>
+
+      <div id="feedback" class="feedback hidden">
+        <div id="feedbackIcon" class="feedback-icon">✓</div>
+        <h2 id="feedbackTitle">Correct!</h2>
+        <p id="feedbackText"></p>
+      </div>
+    </section>
+
+    <section id="resultScreen" class="panel result-panel hidden">
+      <div class="game-logo">🏆</div>
+      <h1>O‘yin tugadi!</h1>
+      <p class="muted">Natijangiz</p>
+      <div id="finalScore" class="final-score">0</div>
+      <p id="finalRank" class="final-rank"></p>
+      <p id="finalMessage" class="muted"></p>
+      <button class="btn btn-primary btn-large" onclick="location.reload()">🔄 Qayta ulanish</button>
+    </section>
+  </main>
+
+  <div id="toast" class="toast hidden"></div>
+  <script src="/socket.io/socket.io.js"></script>
+  <script>
+    const socket = io();
+    const $ = id => document.getElementById(id);
+    const screens = ["joinScreen", "lobbyScreen", "questionScreen", "resultScreen"];
+    let pin = new URLSearchParams(location.search).get("pin") || "";
+    let nickname = "";
+    let answered = false;
+    let currentQuestion = null;
+    let timerInterval = null;
+    let powerups = { fifty: true, double: true };
+    let hiddenOptions = [];
+    let soundEnabled = true;
+    let audioContext;
+
+    $("pinInput").value = pin;
+
+    function showScreen(id) {
+      screens.forEach(s => $(s).classList.toggle("hidden", s !== id));
+    }
+    function toast(message) {
+      $("toast").textContent = message;
+      $("toast").classList.remove("hidden");
+      setTimeout(() => $("toast").classList.add("hidden"), 3000);
+    }
+    function escapeHTML(s) {
+      return String(s).replace(/[&<>"']/g, c => ({
+        "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"
+      })[c]);
+    }
+    function beep(freq = 600, duration = 0.12) {
+      if (!soundEnabled) return;
+      try {
+        audioContext ||= new (window.AudioContext || window.webkitAudioContext)();
+        const oscillator = audioContext.createOscillator();
+        const gain = audioContext.createGain();
+        oscillator.frequency.value = freq;
+        oscillator.connect(gain);
+        gain.connect(audioContext.destination);
+        gain.gain.value = 0.07;
+        oscillator.start();
+        oscillator.stop(audioContext.currentTime + duration);
+      } catch (_) {}
+    }
+    function vibrate(pattern = 80) {
+      if ("vibrate" in navigator) navigator.vibrate(pattern);
+    }
+
+    $("joinForm").addEventListener("submit", e => {
+      e.preventDefault();
+      pin = $("pinInput").value.trim();
+      nickname = $("nicknameInput").value.trim();
+      $("joinError").textContent = "";
+      socket.emit("join-game", { pin, nickname }, result => {
+        if (!result?.ok) {
+          $("joinError").textContent = result?.error || "Ulanishda xatolik.";
+          return;
+        }
+        nickname = result.nickname;
+        $("myName").textContent = nickname;
+        showScreen("lobbyScreen");
+      });
+    });
+
+    socket.on("connect", () => {
+      $("connection").innerHTML = "<i></i> Ulangan";
+      $("connection").classList.add("online");
+      if (pin && nickname) {
+        socket.emit("join-game", { pin, nickname }, result => {
+          if (result?.ok) {
+            $("myName").textContent = nickname;
+          }
+        });
+      }
+    });
+    socket.on("disconnect", () => {
+      $("connection").textContent = "Aloqa uzildi";
+      $("connection").classList.remove("online");
+    });
+
+    socket.on("joined", data => {
+      nickname = data.nickname;
+      showScreen(data.state.status === "question" ? "questionScreen" :
+        data.state.status === "finished" ? "resultScreen" : "lobbyScreen");
+      if (data.question) renderQuestion(data.question);
+    });
+
+    socket.on("room-state", state => {
+      if (state.status === "question" && currentQuestion &&
+          currentQuestion.number !== state.index + 1) {
+        // The authoritative new-question event will render the question.
+      }
+      if (state.status === "finished") showScreen("resultScreen");
+    });
+
+    socket.on("my-stats", stats => {
+      $("score").textContent = stats.score.toLocaleString();
+      $("rank").textContent = stats.rank || "—";
+      $("streak").textContent = stats.streak + " 🔥";
+      $("lobbyScore").textContent = stats.score.toLocaleString();
+      $("lobbyRank").textContent = stats.rank || "—";
+      powerups = stats.powerups || powerups;
+      $("fiftyBtn").disabled = !powerups.fifty || answered;
+      $("doubleBtn").disabled = !powerups.double || answered;
+    });
+
+    const typeLabels = {
+      word: "📘 WORD QUIZ", reverse: "🔄 REVERSE QUIZ",
+      missing: "🔤 MISSING LETTER", grammar: "✏️ FILL THE GAP"
+    };
+
+    socket.on("new-question", renderQuestion);
+
+    function renderQuestion(q) {
+      currentQuestion = q;
+      answered = false;
+      hiddenOptions = [];
+      showScreen("questionScreen");
+      $("feedback").classList.add("hidden");
+      $("answerButtons").classList.remove("hidden");
+      $("powerups").classList.remove("hidden");
+      $("questionLabel").textContent = `SAVOL ${q.number}/${q.total}`;
+      $("playerType").textContent = q.speed ? "⚡ SPEED ROUND" : typeLabels[q.type] || "ENGLISH BATTLE";
+      $("playerQuestion").textContent = q.prompt;
+      $("progressBar").style.width = "100%";
+      $("progressBar").style.transition = "none";
+      $("progressBar").offsetHeight;
+      $("progressBar").style.transition = `width ${q.duration}ms linear`;
+      $("progressBar").style.width = "0%";
+      renderOptions(q.options);
+
+      $("fiftyBtn").disabled = !powerups.fifty;
+      $("doubleBtn").disabled = !powerups.double;
+      $("fiftyBtn").classList.toggle("used", !powerups.fifty);
+      $("doubleBtn").classList.toggle("used", !powerups.double);
+
+      if (timerInterval) clearInterval(timerInterval);
+      const updateTimer = () => {
+        const left = Math.max(0, Math.ceil((q.endsAt - Date.now()) / 1000));
+        $("playerTimer").textContent = left;
+        $("playerTimer").classList.toggle("urgent", left <= 5);
+      };
+      updateTimer();
+      timerInterval = setInterval(updateTimer, 100);
+    }
+
+    function renderOptions(options) {
+      const colors = ["answer-purple", "answer-blue", "answer-orange", "answer-green"];
+      $("answerButtons").innerHTML = options.map((option, i) => `
+        <button class="answer-btn ${colors[i % 4]}" data-answer="${encodeURIComponent(option)}"
+          ${answered || hiddenOptions.includes(option) ? "disabled" : ""}>
+          <span class="answer-letter">${["A","B","C","D"][i]}</span>
+          <span>${escapeHTML(option)}</span>
+        </button>`).join("");
+
+      $("answerButtons").querySelectorAll("button").forEach(btn => {
+        btn.addEventListener("click", () => {
+          if (answered) return;
+          const answer = decodeURIComponent(btn.dataset.answer);
+          answered = true;
+          $("answerButtons").querySelectorAll("button").forEach(b => b.disabled = true);
+          socket.emit("answer", { answer });
+          beep(420, 0.08);
+        });
+      });
+    }
+
+    $("fiftyBtn").onclick = () => {
+      if (answered || !powerups.fifty) return;
+      socket.emit("use-powerup", { type: "fifty" });
+    };
+    $("doubleBtn").onclick = () => {
+      if (answered || !powerups.double) return;
+      socket.emit("use-powerup", { type: "double" });
+    };
+
+    socket.on("powerup-result", result => {
+      if (result.type === "fifty") {
+        hiddenOptions = result.hiddenOptions || [];
+        if (currentQuestion) renderOptions(currentQuestion.options);
+        toast("✂️ 2 ta noto‘g‘ri variant yashirildi!");
+      } else {
+        toast("⚡ Double Points faollashdi!");
+      }
+      beep(800, 0.1);
+    });
+
+    socket.on("answer-result", result => {
+      if (timerInterval) clearInterval(timerInterval);
+      $("feedback").classList.remove("hidden");
+      $("answerButtons").classList.add("hidden");
+      $("powerups").classList.add("hidden");
+      $("feedbackIcon").textContent = result.correct ? "✓" : "✕";
+      $("feedbackIcon").className = "feedback-icon " + (result.correct ? "success" : "failure");
+      $("feedbackTitle").textContent = result.correct ? "Correct! 🎉" : "Wrong!";
+      $("feedbackText").textContent = result.correct
+        ? `+${result.points} ball! ${result.explanation}`
+        : `To‘g‘ri javob: ${result.correctAnswer}`;
+      $("feedback").classList.toggle("success-feedback", result.correct);
+      $("feedback").classList.toggle("failure-feedback", !result.correct);
+      vibrate(result.correct ? [60, 40, 100] : 180);
+      beep(result.correct ? 880 : 240, 0.18);
+    });
+
+    socket.on("answer-reveal", data => {
+      if (timerInterval) clearInterval(timerInterval);
+      if (!answered) {
+        $("feedback").classList.remove("hidden");
+        $("answerButtons").classList.add("hidden");
+        $("powerups").classList.add("hidden");
+        $("feedbackIcon").textContent = "⏰";
+        $("feedbackTitle").textContent = "Vaqt tugadi!";
+        $("feedbackText").textContent = "To‘g‘ri javob: " + data.correctAnswer;
+      }
+    });
+
+    socket.on("game-over", data => {
+      if (timerInterval) clearInterval(timerInterval);
+      showScreen("resultScreen");
+      const mine = data.leaderboard.find(p => p.nickname === nickname);
+      $("finalScore").textContent = mine ? mine.score.toLocaleString() : "0";
+      $("finalRank").textContent = mine ? `${mine.rank}-o‘rin / ${data.leaderboard.length} o‘yinchi` : "";
+      $("finalMessage").textContent = mine && mine.rank === 1
+        ? "🏆 Ajoyib! Siz g‘olibsiz!" : "Yaxshi harakat! Keyingi safar yanada yaxshi natija ko‘rsating.";
+      confetti();
+    });
+
+    function confetti() {
+      for (let i = 0; i < 45; i++) {
+        const el = document.createElement("i");
+        el.className = "confetti";
+        el.style.left = Math.random() * 100 + "vw";
+        el.style.animationDelay = Math.random() * 2 + "s";
+        el.style.setProperty("--drift", (Math.random() * 120 - 60) + "px");
+        el.style.background = ["#ff4d6d","#ffd166","#06d6a0","#4cc9f0"][i%4];
+        document.body.appendChild(el);
+        setTimeout(() => el.remove(), 5000);
+      }
+    }
+  </script>
+</body>
+</html>
